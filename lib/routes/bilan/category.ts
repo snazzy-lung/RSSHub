@@ -1,7 +1,8 @@
 import { load } from 'cheerio';
 
 import { type Route } from '@/types';
-import puppeteer from '@/utils/puppeteer';
+import cache from '@/utils/cache';
+import ofetch from '@/utils/ofetch';
 
 const CATEGORIES: Record<string, string> = {
     home: '',
@@ -30,7 +31,7 @@ export const route: Route = {
     },
     features: {
         requireConfig: false,
-        requirePuppeteer: true, // ← important
+        requirePuppeteer: false,
         antiCrawler: true,
         supportBT: false,
         supportPodcast: false,
@@ -46,73 +47,88 @@ export const route: Route = {
         const path = CATEGORIES[category] ?? '';
         const url = `https://www.bilan.ch${path}`;
 
-        const browser = await puppeteer();
-        const page = await browser.newPage();
+        const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-        await page.setExtraHTTPHeaders({
-            'Accept-Language': 'fr-CH,fr;q=0.9',
+        const cookie = await cache.tryGet(
+            'bilan-cookie',
+            async () => {
+                const response = await ofetch.raw('https://www.bilan.ch/', {
+                    headers: {
+                        'User-Agent': ua,
+                    },
+                    redirect: 'manual',
+                });
+                const setCookie = response.headers.get('set-cookie');
+                if (setCookie) {
+                    return setCookie.split(';')[0];
+                }
+                return '';
+            },
+            3600
+        );
+
+        const html = await ofetch(url, {
+            headers: {
+                'Accept-Language': 'fr-CH,fr;q=0.9',
+                'User-Agent': ua,
+                cookie,
+            },
         });
 
-        try {
-            await page.goto(url, {
-                waitUntil: 'networkidle2',
-                timeout: 30000,
-            });
+        const $ = load(html);
+        const seenLinks = new Set();
+        const items: any[] = [];
 
-            // Attendre que les articles soient rendus
-            await page.waitForSelector('article', { timeout: 15000 });
+        // Les données sont dans des <script id="teaser-data-XXXX" type="application/json">
+        $('script[id^="teaser-data-"]').each((_, el) => {
+            try {
+                const parsed = JSON.parse($(el).html() ?? '{}');
+                const data = parsed.teaser || parsed;
+                const itemPath = data.path || data.url;
 
-            const html = await page.content();
-            const $ = load(html);
-
-            const seenLinks = new Set<string>();
-            const items: any[] = [];
-
-            $('article').each((_, el) => {
-                const anchor = $(el).find('a[href]').first();
-                const rawHref = anchor.attr('href') ?? '';
-                if (!rawHref) {
+                if (!itemPath || !data.title) {
                     return;
                 }
 
-                const articleUrl = rawHref.startsWith('http') ? rawHref : `https://www.bilan.ch${rawHref}`;
+                const articleUrl = itemPath.startsWith('http') ? itemPath : `https://www.bilan.ch${itemPath.startsWith('/') ? '' : '/'}${itemPath}`;
 
                 if (seenLinks.has(articleUrl)) {
                     return;
                 }
                 seenLinks.add(articleUrl);
 
-                const title = $(el).find('h2, h3').first().text().trim();
-                if (!title) {
-                    return;
+                let authorName = '';
+                if (data.authors && data.authors.length > 0) {
+                    authorName = data.authors.map((a: any) => a.name).join(', ');
+                } else if (data.authors?.name) {
+                    authorName = data.authors.name;
                 }
 
-                const description = $(el).find('p').first().text().trim();
-                const pubDate = $(el).find('time').attr('datetime') ?? '';
-                const author = $(el).find('[class*="author"], [class*="auteur"], [rel="author"]').first().text().trim();
-                const image = $(el).find('img').first().attr('src') ?? $(el).find('img').first().attr('data-src') ?? '';
-
                 items.push({
-                    title,
+                    title: data.titleHeader ? `${data.titleHeader} — ${data.title}` : data.title,
                     link: articleUrl,
-                    description,
-                    pubDate,
-                    author,
-                    image,
+                    description: data.lead ?? '',
+                    pubDate: data.date ?? data.published,
+                    author: authorName,
+                    category: data.categoryPath ? [data.categoryPath] : [],
+                    image: data.image?.url ?? '',
+                    _extra: {
+                        isPremium: data.isPremium ?? false,
+                    },
                 });
-            });
+            } catch {
+                // JSON invalide, on skip
+            }
+        });
 
-            const label = category === 'home' ? 'Accueil' : category.charAt(0).toUpperCase() + category.slice(1);
+        const label = category === 'home' ? 'Accueil' : category.charAt(0).toUpperCase() + category.slice(1);
 
-            return {
-                title: `Bilan — ${label}`,
-                link: url,
-                description: `Derniers articles Bilan.ch — ${label}`,
-                language: 'fr',
-                item: items,
-            };
-        } finally {
-            browser.close();
-        }
+        return {
+            title: `Bilan — ${label}`,
+            link: url,
+            description: `Derniers articles Bilan.ch — ${label}`,
+            language: 'fr',
+            item: items,
+        };
     },
 };
