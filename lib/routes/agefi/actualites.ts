@@ -3,8 +3,6 @@ import { load } from 'cheerio';
 import { type Route } from '@/types';
 import ofetch from '@/utils/ofetch';
 
-import { namespace } from './namespace';
-
 export const route: Route = {
     path: '/:category?',
     categories: ['finance'],
@@ -26,6 +24,14 @@ export const route: Route = {
             default: 'entreprises',
         },
     },
+    features: {
+        requireConfig: false,
+        requirePuppeteer: false,
+        antiCrawler: true,
+        supportBT: false,
+        supportPodcast: false,
+        supportScihub: false,
+    },
     name: 'Actualités',
     maintainers: ['corraya'],
     url: 'agefi.com',
@@ -35,7 +41,7 @@ export const route: Route = {
 
         const response = await ofetch(url, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (compatible; RSSHub)',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             },
         });
         const $ = load(response);
@@ -77,5 +83,4 @@ export const route: Route = {
             item: items,
         };
     },
-    namespace,
 };
